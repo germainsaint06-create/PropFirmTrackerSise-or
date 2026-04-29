@@ -7,8 +7,12 @@ import os
 from db import init_db, list_accounts, list_firms
 from rules_engine import inactivity_status, LEVEL_COLORS, LEVEL_LABELS
 
-# Initialize database on first import
+# Initialize database and seed firms on first import
 init_db()
+from db import list_firms
+if not list_firms():
+    from seed import seed
+    seed()
 
 st.set_page_config(
     page_title="Prop Firm Tracker",
