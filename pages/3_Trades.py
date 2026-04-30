@@ -66,8 +66,9 @@ with tab_new:
         c4, c5, c6 = st.columns(3)
         entry_date = c4.date_input("Fecha entrada", value=date.today())
         entry_t = c5.time_input("Hora entrada", value=datetime.now().time())
-        spread = c6.number_input("Spread (pips/puntos)", min_value=0.0, value=0.0,
-                                 step=0.1, format="%.2f")
+        spread = c6.number_input("Spread USD", min_value=0.0, value=0.0,
+                                 step=0.5, format="%.2f",
+                                 help="Costo del spread pagado al entrar, en USD")
 
         c7, c8, c9 = st.columns(3)
         entry_price = c7.number_input("Precio entrada", min_value=0.0, value=0.0, step=0.01, format="%.5f")
@@ -98,13 +99,14 @@ with tab_new:
                 entry_dt = datetime.combine(entry_date, entry_t)
                 exit_dt = datetime.combine(exit_date, exit_t) if is_closed else None
 
-                # Run rules engine
+                # Run rules engine (checks firm-level + account-specific rules)
                 violations = check_trade_against_rules(
                     firm_id=acct["firm_id"],
                     phase=acct["phase"],
                     instrument=instrument,
                     lot_size=lot_size,
                     risk_usd=risk_usd if risk_usd > 0 else None,
+                    account_id=acct["id"],
                 )
 
                 tid = create_trade(
@@ -126,16 +128,26 @@ with tab_new:
                 )
 
                 # Update current balance if PnL provided
+                old_balance = acct.get("current_balance") or acct["initial_balance"]
+                new_balance = old_balance
                 if is_closed and pnl != 0:
-                    new_balance = (acct.get("current_balance") or acct["initial_balance"]) + pnl
+                    new_balance = float(old_balance) + float(pnl)
                     update_account(acct["id"], current_balance=new_balance)
 
                 if violations:
-                    st.error(f"Trade registrado con {len(violations)} VIOLACION(ES):")
+                    st.error(f"Trade #{tid} registrado con {len(violations)} VIOLACION(ES):")
                     for v in violations:
                         st.write(f"  - {v}")
                 else:
-                    st.success(f"Trade registrado (id={tid}). Sin violaciones detectadas.")
+                    st.success(f"Trade #{tid} registrado. Sin violaciones detectadas.")
+
+                if is_closed and pnl != 0:
+                    delta = pnl
+                    icon = "+" if delta >= 0 else ""
+                    st.info(
+                        f"**Balance actualizado:** {old_balance:,.2f} -> {new_balance:,.2f} "
+                        f"({icon}{delta:,.2f} USD)"
+                    )
 
 # ---------------- Historial ----------------
 with tab_list:
@@ -168,7 +180,7 @@ with tab_list:
                 "Salida": t.get("exit_time") or "ABIERTO",
                 "Riesgo USD": t.get("risk_usd"),
                 "P&L": t.get("pnl"),
-                "Spread": t.get("spread_pips"),
+                "Spread USD": t.get("spread_pips"),
                 "Violaciones": " | ".join(viol),
             })
         df = pd.DataFrame(rows)
@@ -193,9 +205,9 @@ with tab_list:
         avg_spread = (sum((t.get("spread_pips") or 0) for t in trades if t.get("spread_pips"))
                       / max(1, sum(1 for t in trades if t.get("spread_pips"))))
         m1.metric("Trades", len(trades))
-        m2.metric("P&L total", f"{total_pnl:,.2f}")
+        m2.metric("P&L total USD", f"{total_pnl:,.2f}")
         m3.metric("Con violaciones", total_viol)
-        m4.metric("Spread promedio", f"{avg_spread:.2f}" if avg_spread else "-")
+        m4.metric("Spread promedio USD", f"{avg_spread:.2f}" if avg_spread else "-")
 
         st.divider()
         with st.expander("Borrar un trade (cuidado)"):
