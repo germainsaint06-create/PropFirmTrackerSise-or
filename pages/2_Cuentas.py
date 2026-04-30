@@ -76,9 +76,23 @@ with tab_list:
     if not accounts:
         st.info("No hay cuentas para mostrar.")
     else:
+        # Show accounts with notes prominently first
+        accounts_with_notes = [a for a in accounts if a.get("notes")]
+        if accounts_with_notes:
+            with st.expander(f"Cuentas con notas ({len(accounts_with_notes)})", expanded=True):
+                for a in accounts_with_notes:
+                    st.markdown(
+                        f"**#{a['id']}** {a['firm_name']} / {a['account_alias']} "
+                        f"({a['phase']}, {a['status']})"
+                    )
+                    st.caption(f"Nota: {a['notes']}")
+                    st.divider()
+
         rows = []
         for a in accounts:
             s = inactivity_status(a)
+            note = a.get("notes") or ""
+            note_preview = (note[:50] + "...") if len(note) > 50 else note
             rows.append({
                 "ID": a["id"],
                 "Firm": a["firm_name"],
@@ -91,6 +105,7 @@ with tab_list:
                 "Trades": a.get("trade_count", 0),
                 "Dias inactiva": s["days_inactive"],
                 "Limite": s["limit_days"],
+                "Nota": note_preview,
             })
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True, hide_index=True)
