@@ -126,7 +126,7 @@ else:
             "Lotaje": t["lot_size"],
             "Riesgo USD": t.get("risk_usd"),
             "P&L": t.get("pnl"),
-            "Spread": t.get("spread_pips"),
+            "Spread USD": t.get("spread_pips"),
             "Entrada": t["entry_time"],
             "Violaciones": " | ".join(viol) if viol else "",
         })
