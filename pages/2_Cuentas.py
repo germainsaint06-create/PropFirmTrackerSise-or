@@ -1,4 +1,4 @@
-"""Cuentas - gestion de cuentas (alta, edicion, archivo)."""
+"""Cuentas - gestion de cuentas (alta, edicion, archivo, balance)."""
 import streamlit as st
 import pandas as pd
 from datetime import date
@@ -7,7 +7,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db import (
     list_accounts, list_firms, create_account, update_account,
-    archive_account, get_account
+    archive_account, get_account, recalculate_balance_from_trades,
+    list_status_changes
 )
 from rules_engine import inactivity_status
 
@@ -16,7 +17,7 @@ if not st.session_state.get("authed"):
     st.stop()
 
 st.title("Cuentas")
-st.caption("Alta, edicion y archivo de cuentas")
+st.caption("Alta, edicion, archivo y balance de cuentas")
 
 firms = list_firms()
 if not firms:
@@ -25,7 +26,9 @@ if not firms:
 
 firm_lookup = {f["name"]: f["id"] for f in firms}
 
-tab_new, tab_list, tab_edit = st.tabs(["Crear cuenta", "Lista de cuentas", "Editar / Archivar"])
+tab_new, tab_list, tab_edit, tab_history = st.tabs([
+    "Crear cuenta", "Lista de cuentas", "Editar / Balance / Estado", "Historial de estados"
+])
 
 # ---------------- Crear cuenta ----------------
 with tab_new:
@@ -37,7 +40,7 @@ with tab_new:
 
         c3, c4 = st.columns(2)
         alias = c3.text_input("Alias (nombre corto que identifique la cuenta)",
-                              placeholder="ej: TP-100k-A")
+                              placeholder="ej: Alpha 40, Trading Pit 33")
         number = c4.text_input("Numero de cuenta del broker (opcional)")
 
         c5, c6 = st.columns(2)
@@ -65,8 +68,8 @@ with tab_new:
 
 # ---------------- Lista ----------------
 with tab_list:
-    st.subheader("Cuentas activas")
-    show_archived = st.checkbox("Mostrar archivadas / breach / perdidas")
+    st.subheader("Cuentas")
+    show_archived = st.checkbox("Mostrar archivadas / breach / perdidas / paid out")
     status_filter = None if show_archived else "active"
 
     accounts = list_accounts(status=status_filter)
@@ -95,7 +98,7 @@ with tab_list:
 
 # ---------------- Editar ----------------
 with tab_edit:
-    st.subheader("Editar / archivar cuenta")
+    st.subheader("Editar cuenta, balance y estado")
     accounts = list_accounts()
     if not accounts:
         st.info("No hay cuentas creadas.")
@@ -106,28 +109,57 @@ with tab_edit:
         acct_id = options[selected_label]
         acct = get_account(acct_id)
 
+        # Balance display section - always visible
+        st.markdown("### Balance")
+        bcol1, bcol2, bcol3 = st.columns(3)
+        bcol1.metric("Balance inicial", f"{acct['initial_balance']:,.2f}")
+        cur_bal = float(acct.get("current_balance") or acct["initial_balance"])
+        delta = cur_bal - float(acct["initial_balance"])
+        bcol2.metric("Balance actual", f"{cur_bal:,.2f}",
+                     delta=f"{delta:+,.2f}" if delta != 0 else None)
+        from db import list_trades
+        trades = list_trades(account_id=acct_id)
+        sum_pnl = sum((t.get("pnl") or 0) for t in trades)
+        bcol3.metric("Suma P&L de trades", f"{sum_pnl:,.2f}")
+
+        st.caption(
+            "El **Balance actual** se actualiza automaticamente con el P&L de cada trade que registres como cerrado. "
+            "Si la suma de P&L y el balance actual no coinciden, alguien hizo edicion manual."
+        )
+
+        ccol1, ccol2 = st.columns(2)
+        if ccol1.button("Recalcular balance desde trades", help="Reescribe balance actual = inicial + suma de P&L"):
+            new_bal = recalculate_balance_from_trades(acct_id)
+            st.success(f"Balance recalculado: {new_bal:,.2f}")
+            st.rerun()
+
+        with ccol2.expander("Editar balance manualmente"):
+            new_manual = st.number_input(
+                "Nuevo balance actual",
+                value=cur_bal,
+                step=10.0
+            )
+            if st.button("Guardar balance manual"):
+                update_account(acct_id, current_balance=new_manual)
+                st.success("Balance actualizado manualmente.")
+                st.rerun()
+
+        st.divider()
+        st.markdown("### Datos de la cuenta")
         with st.form("edit_account"):
             c1, c2 = st.columns(2)
             new_alias = c1.text_input("Alias", value=acct["account_alias"])
             new_number = c2.text_input("Numero", value=acct.get("account_number") or "")
 
             c3, c4 = st.columns(2)
+            phase_opts = ["phase1", "phase2", "funded"]
             new_phase = c3.selectbox(
                 "Fase",
-                ["phase1", "phase2", "funded"],
-                index=["phase1", "phase2", "funded"].index(acct["phase"]) if acct["phase"] in ("phase1", "phase2", "funded") else 0
+                phase_opts,
+                index=phase_opts.index(acct["phase"]) if acct["phase"] in phase_opts else 0
             )
-            new_status = c4.selectbox(
-                "Status",
-                ["active", "archived", "breached", "lost", "paid_out"],
-                index=["active", "archived", "breached", "lost", "paid_out"].index(acct["status"]) if acct["status"] in ("active", "archived", "breached", "lost", "paid_out") else 0
-            )
-
-            c5, c6 = st.columns(2)
-            new_balance_ini = c5.number_input("Balance inicial",
+            new_balance_ini = c4.number_input("Balance inicial",
                                               value=float(acct["initial_balance"]))
-            new_balance_act = c6.number_input("Balance actual",
-                                              value=float(acct.get("current_balance") or acct["initial_balance"]))
 
             new_notes = st.text_area("Notas", value=acct.get("notes") or "")
 
@@ -138,30 +170,61 @@ with tab_edit:
                     account_alias=new_alias.strip(),
                     account_number=new_number.strip() or None,
                     phase=new_phase,
-                    status=new_status,
                     initial_balance=new_balance_ini,
-                    current_balance=new_balance_act,
                     notes=new_notes.strip() or None,
                 )
                 st.success("Cambios guardados.")
                 st.rerun()
 
         st.divider()
-        st.markdown("**Acciones rapidas**")
-        cols = st.columns(4)
-        if cols[0].button("Archivar", use_container_width=True):
-            archive_account(acct_id, "archived")
-            st.success("Cuenta archivada.")
+        st.markdown("### Cambiar estado de la cuenta")
+
+        with st.expander("Que significa cada estado"):
+            st.markdown(
+                "- **active**: cuenta operando normalmente.\n"
+                "- **archived**: cuenta apartada por decision propia (no perdida, no cobrada). "
+                "Sus datos siguen guardados.\n"
+                "- **breached**: cuenta perdida por incumplir alguna regla de la firm "
+                "(profit target, max DD, daily DD, regla de inactividad, etc.).\n"
+                "- **lost**: cuenta perdida por drawdown del mercado / decisiones operativas, "
+                "sin haber breach explicito.\n"
+                "- **paid_out**: cuenta cobrada (retiraste profit de una funded). "
+                "Sigue en el sistema con todo su historial.\n\n"
+                "**Importante:** ningun estado borra datos. Las cuentas en cualquier estado "
+                "siguen consultables marcando 'Mostrar archivadas' en la lista de cuentas."
+            )
+
+        st.markdown(f"Estado actual: **{acct['status']}**")
+
+        new_status = st.selectbox(
+            "Cambiar a",
+            ["active", "archived", "breached", "lost", "paid_out"],
+            index=["active", "archived", "breached", "lost", "paid_out"].index(acct["status"])
+                if acct["status"] in ("active", "archived", "breached", "lost", "paid_out") else 0
+        )
+        reason = st.text_input("Razon del cambio (opcional pero recomendado)",
+                               placeholder="ej: violo daily DD el 2026-04-29")
+        if st.button("Aplicar cambio de estado", type="primary"):
+            archive_account(acct_id, new_status, reason.strip() or None)
+            st.success(f"Estado cambiado a {new_status}.")
             st.rerun()
-        if cols[1].button("Marcar BREACH", use_container_width=True):
-            archive_account(acct_id, "breached")
-            st.success("Cuenta marcada en breach.")
-            st.rerun()
-        if cols[2].button("Marcar PERDIDA", use_container_width=True):
-            archive_account(acct_id, "lost")
-            st.success("Cuenta marcada como perdida.")
-            st.rerun()
-        if cols[3].button("Marcar PAID OUT", use_container_width=True):
-            archive_account(acct_id, "paid_out")
-            st.success("Cuenta marcada como paid out.")
-            st.rerun()
+
+# ---------------- Historial ----------------
+with tab_history:
+    st.subheader("Historial de cambios de estado")
+    st.caption("Cada vez que cambia el estado de una cuenta queda registrado aqui")
+
+    changes = list_status_changes()
+    if not changes:
+        st.info("Aun no hay cambios de estado registrados.")
+    else:
+        rows = [{
+            "Fecha": c["changed_at"],
+            "Firm": c["firm_name"],
+            "Cuenta": c["account_alias"],
+            "De": c.get("old_status") or "(nuevo)",
+            "A": c["new_status"],
+            "Razon": c.get("reason") or "",
+        } for c in changes]
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True, hide_index=True)
